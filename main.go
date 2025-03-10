@@ -126,7 +126,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Redirecting to the success page")
 	// Redirect to success page
-	http.Redirect(w, r, "/success", http.StatusFound)
+	http.Redirect(w, r, "http://localhost:4200/dashboard", http.StatusFound)
 }
 
 // Function to exchange authorization code for an ID token
