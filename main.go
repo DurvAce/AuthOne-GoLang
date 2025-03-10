@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -19,6 +19,12 @@ const (
 	authEndpoint  = oktaDomain + "/api/v1/authn"
 	authzEndpoint = oktaDomain + "/oauth2/default/v1/authorize"
 	tokenURL      = oktaDomain + "/oauth2/default/v1/token"
+
+	sfdcDomain       = "https://login.salesforce.com"
+	sfdcTokenURL     = sfdcDomain + "/services/oauth2/token"
+	sfdcClientID     = "3MVG9GBhY6wQjl2vxFbIv5OhZbV2QLlmReEQwDVEzKk85_JBCn5YEaTw5AzXBrSER4LCe7V4fHmKdDZ3tCIOH"
+	sfdcClientSecret = "7C3724167D0310D93D583543AF10030B06438A8FBCA4A2269D0556C216572EEC"
+	sfdcRedirectUri  = "http://localhost:8080/callback?idp_provider=sfdc"
 )
 
 // LoginRequest represents user credentials received from frontend
@@ -30,7 +36,7 @@ type LoginRequest struct {
 // Handler for login API
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println("Error reading request body:", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -75,7 +81,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Read response body
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 
 	// Handle authentication failure
 	if resp.StatusCode != http.StatusOK {
@@ -104,6 +110,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Callback URL hit!")
 	code := r.URL.Query().Get("code")
+	idp_provider := r.URL.Query().Get("idp_provider")
 	if code == "" {
 		http.Error(w, "Authorization code not found", http.StatusBadRequest)
 		return
@@ -111,7 +118,13 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Authorization code received:", code)
 
 	// Exchange authorization code for ID token
-	idToken, err := exchangeCodeForToken(code)
+	var idToken string
+	var err error
+	if idp_provider == "" {
+		idToken, err = exchangeCodeForToken(code)
+	} else {
+		idToken, err = exchangeCodeForTokenSFDC(code)
+	}
 	if err != nil {
 		http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -129,7 +142,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "http://localhost:4200/dashboard", http.StatusFound)
 }
 
-// Function to exchange authorization code for an ID token
+// Okta : Function to exchange authorization code for an ID token
 func exchangeCodeForToken(code string) (string, error) {
 	// Prepare form data
 	data := url.Values{}
@@ -147,7 +160,7 @@ func exchangeCodeForToken(code string) (string, error) {
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read token response: %v", err)
 	}
@@ -162,6 +175,46 @@ func exchangeCodeForToken(code string) (string, error) {
 	idToken, exists := tokenResponse["id_token"].(string)
 	if !exists {
 		return "", fmt.Errorf("ID token not found in response")
+	}
+
+	return idToken, nil
+}
+
+// SFDC : Function to exchange authorization code for an ID token
+func exchangeCodeForTokenSFDC(code string) (string, error) {
+	// Prepare form data
+	data := url.Values{}
+	data.Set("grant_type", "authorization_code")
+	data.Set("client_id", sfdcClientID)
+	data.Set("client_secret", sfdcClientSecret)
+	data.Set("redirect_uri", sfdcRedirectUri)
+	data.Set("code", code)
+
+	// Send POST request to Okta token endpoint
+	resp, err := http.PostForm(sfdcTokenURL, data)
+	if err != nil {
+		return "", fmt.Errorf("failed to send token request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	fmt.Println("SFDC received code: ", string(body))
+	if err != nil {
+		return "", fmt.Errorf("failed to read sfdc token response: %v", err)
+	}
+
+	// Parse JSON response
+	var tokenResponse map[string]interface{}
+	fmt.Println("sfdc tokenResponse:", tokenResponse)
+	if err := json.Unmarshal(body, &tokenResponse); err != nil {
+		return "", fmt.Errorf("failed to parse sfdc token response: %v", err)
+	}
+
+	// Extract ID token
+	idToken, exists := tokenResponse["id_token"].(string)
+	if !exists {
+		return "", fmt.Errorf("SFDC ID token not found in response")
 	}
 
 	return idToken, nil
@@ -199,7 +252,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 func loginHandler_2(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -234,7 +287,7 @@ func loginHandler_2(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Read response body
-	respBody, _ := ioutil.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 
 	// Check for authentication failure
 	if resp.StatusCode != http.StatusOK {
@@ -285,7 +338,7 @@ func loginHandler_2(w http.ResponseWriter, r *http.Request) {
 		log.Println("No redirect URL found in response")
 		log.Println("Response status:", authResp.Status)
 		log.Println("Response headers:", authResp.Header)
-		respBody, _ := ioutil.ReadAll(authResp.Body)
+		respBody, _ := io.ReadAll(authResp.Body)
 		log.Println("Response body:", string(respBody))
 		http.Error(w, "No redirect URL found", http.StatusInternalServerError)
 		return
