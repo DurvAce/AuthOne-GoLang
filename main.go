@@ -7,25 +7,63 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
-// Okta Configuration
-const (
-	oktaDomain    = "https://trial-8427766.okta.com"
-	clientID      = "0oapbhpf1ytKiM3OI697"
-	clientSecret  = "TNlcS3jqzIh2XelWKQJ1m7zAr_pVml4NQ-4MWqMYc6MObu_5oL5o2HZFjr-9rDeb"
-	redirectURI   = "http://localhost:8080/callback"
-	authEndpoint  = oktaDomain + "/api/v1/authn"
+// Configuration variables
+var (
+	oktaDomain    string
+	clientID      string
+	clientSecret  string
+	redirectURI   string
+	authEndpoint  string
+	authzEndpoint string
+	tokenURL      string
+
+	sfdcDomain       string
+	sfdcClientID     string
+	sfdcClientSecret string
+	sfdcRedirectUri  string
+	sfdcTokenURL     string
+	redirectURL      string
+)
+
+// Initialize configuration variables after .env is loaded
+func initConfig() {
+	// Load environment variables from .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Warning: No .env file found, using system environment variables")
+	}
+
+	// Okta Configuration
+	oktaDomain = getEnv("OKTA_DOMAIN")
+	clientID = getEnv("OKTA_CLIENT_ID")
+	clientSecret = getEnv("OKTA_CLIENT_SECRET")
+	redirectURI = getEnv("OKTA_REDIRECT_URI")
+	authEndpoint = oktaDomain + "/api/v1/authn"
 	authzEndpoint = oktaDomain + "/oauth2/default/v1/authorize"
-	tokenURL      = oktaDomain + "/oauth2/default/v1/token"
+	tokenURL = oktaDomain + "/oauth2/default/v1/token"
 
-	sfdcDomain       = "https://login.salesforce.com"
-	sfdcTokenURL     = sfdcDomain + "/services/oauth2/token"
-	sfdcClientID     = "3MVG9GBhY6wQjl2vxFbIv5OhZbV2QLlmReEQwDVEzKk85_JBCn5YEaTw5AzXBrSER4LCe7V4fHmKdDZ3tCIOH"
-	sfdcClientSecret = "7C3724167D0310D93D583543AF10030B06438A8FBCA4A2269D0556C216572EEC"
-	sfdcRedirectUri  = "http://localhost:8080/callback?idp_provider=sfdc"
-)
+	// Salesforce Configuration
+	sfdcDomain = getEnv("SFDC_DOMAIN")
+	sfdcClientID = getEnv("SFDC_CLIENT_ID")
+	sfdcClientSecret = getEnv("SFDC_CLIENT_SECRET")
+	sfdcRedirectUri = getEnv("SFDC_REDIRECT_URI")
+	sfdcTokenURL = sfdcDomain + "/services/oauth2/token"
+	redirectURL = getEnv("REDIRECT_URL")
+}
+
+func getEnv(key string) string {
+	if value, exists := os.LookupEnv(key); exists && value != "" {
+		return value
+	}
+	log.Printf("Warning: Environment variable %s is not set or empty", key)
+	return ""
+}
 
 // LoginRequest represents user credentials received from frontend
 type LoginRequest struct {
@@ -139,7 +177,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Redirecting to the success page")
 	// Redirect to success page
-	http.Redirect(w, r, "http://localhost:4200/dashboard", http.StatusFound)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
 // Okta : Function to exchange authorization code for an ID token
@@ -206,10 +244,10 @@ func exchangeCodeForTokenSFDC(code string) (string, error) {
 
 	// Parse JSON response
 	var tokenResponse map[string]interface{}
-	fmt.Println("sfdc tokenResponse:", tokenResponse)
 	if err := json.Unmarshal(body, &tokenResponse); err != nil {
 		return "", fmt.Errorf("failed to parse sfdc token response: %v", err)
 	}
+	fmt.Println("sfdc tokenResponse:", tokenResponse)
 
 	// Extract ID token
 	idToken, exists := tokenResponse["id_token"].(string)
@@ -382,6 +420,9 @@ func loginHandler_2(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Initialize configuration
+	initConfig()
+
 	// Create a new router
 	mux := http.NewServeMux()
 
