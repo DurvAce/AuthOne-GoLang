@@ -1,1 +1,1 @@
-# AuthOne-BE
+# AuthOne-GoLang
