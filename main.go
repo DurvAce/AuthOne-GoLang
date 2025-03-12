@@ -258,32 +258,35 @@ func exchangeCodeForTokenSFDC(code string) (string, error) {
 	return idToken, nil
 }
 
-// Success page
 func successHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Login Successful!")
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow requests from Angular frontend
 		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "http://localhost:4200" // Default to Angular dev server
+
+		allowedOrigins := map[string]bool{
+			"http://localhost:4200":               true,
+			"https://authone-cohesity.vercel.app": true,
 		}
 
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		if _, exists := allowedOrigins[origin]; exists {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "https://authone-cohesity.vercel.app")
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "3600") // Cache preflight response for 1 hour
+		w.Header().Set("Access-Control-Max-Age", "3600")
+		w.Header().Set("Vary", "Origin")
 
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
-		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
 }
