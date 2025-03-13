@@ -77,10 +77,7 @@ func initConfig() {
 }
 
 func getEnv(key string) string {
-	isProd := false
-	if host, exists := os.LookupEnv("HOST_ENV"); exists && (host == "production" || host == "prod") {
-		isProd = true
-	}
+	isProd := os.Getenv("RAILWAY_ENV") == "production" || os.Getenv("HOST_ENV") == "production" || os.Getenv("HOST_ENV") == "prod"
 
 	envLogOnce.Do(func() {
 		if isProd {
@@ -88,7 +85,7 @@ func getEnv(key string) string {
 		} else {
 			log.Println("Running in LOCAL/DEVELOPMENT environment")
 		}
-	})	
+	})
 
 	if isProd && (key == "REDIRECT_URL" || key == "REDIRECT_URL_AUTH0") {
 		prodKey := "PROD_" + key
