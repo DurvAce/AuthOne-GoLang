@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/joho/godotenv"
 )
@@ -77,24 +76,6 @@ func initConfig() {
 }
 
 func getEnv(key string) string {
-	isProd := os.Getenv("RAILWAY_ENV") == "production" || os.Getenv("HOST_ENV") == "production" || os.Getenv("HOST_ENV") == "prod"
-
-	envLogOnce.Do(func() {
-		if isProd {
-			log.Println("Running in PRODUCTION environment")
-		} else {
-			log.Println("Running in LOCAL/DEVELOPMENT environment")
-		}
-	})
-
-	if isProd && (key == "REDIRECT_URL" || key == "REDIRECT_URL_AUTH0") {
-		prodKey := "PROD_" + key
-		if value, exists := os.LookupEnv(prodKey); exists && value != "" {
-			return value
-		}
-		log.Printf("Warning: Production environment variable %s is not set or empty", prodKey)
-	}
-
 	if value, exists := os.LookupEnv(key); exists && value != "" {
 		return value
 	}
@@ -102,9 +83,6 @@ func getEnv(key string) string {
 	log.Printf("Warning: Environment variable %s is not set or empty", key)
 	return ""
 }
-
-// Create a sync.Once to ensure we only log the environment once
-var envLogOnce sync.Once
 
 // LoginRequest represents user credentials received from frontend
 type LoginRequest struct {
