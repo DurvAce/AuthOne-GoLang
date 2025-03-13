@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/joho/godotenv"
 )
@@ -29,6 +32,12 @@ var (
 	sfdcRedirectUri  string
 	sfdcTokenURL     string
 	redirectURL      string
+	redirectURLAuth0 string
+
+	// authDomain      string
+	// authClientID    string
+	// authRedirectUri string
+	// authTokenURL    string
 )
 
 // Initialize configuration variables after .env is loaded
@@ -55,15 +64,50 @@ func initConfig() {
 	sfdcRedirectUri = getEnv("SFDC_REDIRECT_URI")
 	sfdcTokenURL = sfdcDomain + "/services/oauth2/token"
 	redirectURL = getEnv("REDIRECT_URL")
+	redirectURLAuth0 = getEnv("REDIRECT_URL_AUTH0")
+
+	// https://dev-pqfdrdo9.us.auth0.com
+	// authDomain = getEnv("AUTH_DOMAIN")
+	//BcnRiVa4hushC3R27fBLJW1Jtit24Khx
+	// authClientID = getEnv("AUTH_CLIENT_ID")
+	// http://localhost:8080/auth0callback
+	// authRedirectUri = getEnv("AUTH_REDIRECT_URI")
+	//  /oauth/token
+	// authTokenURL = sfdcDomain + "/oauth/token"
 }
 
 func getEnv(key string) string {
+	isProd := false
+	if host, exists := os.LookupEnv("HOST_ENV"); exists && (host == "production" || host == "prod") {
+		isProd = true
+	}
+
+	envLogOnce.Do(func() {
+		if isProd {
+			log.Println("Running in PRODUCTION environment")
+		} else {
+			log.Println("Running in LOCAL/DEVELOPMENT environment")
+		}
+	})	
+
+	if isProd && (key == "REDIRECT_URL" || key == "REDIRECT_URL_AUTH0") {
+		prodKey := "PROD_" + key
+		if value, exists := os.LookupEnv(prodKey); exists && value != "" {
+			return value
+		}
+		log.Printf("Warning: Production environment variable %s is not set or empty", prodKey)
+	}
+
 	if value, exists := os.LookupEnv(key); exists && value != "" {
 		return value
 	}
+
 	log.Printf("Warning: Environment variable %s is not set or empty", key)
 	return ""
 }
+
+// Create a sync.Once to ensure we only log the environment once
+var envLogOnce sync.Once
 
 // LoginRequest represents user credentials received from frontend
 type LoginRequest struct {
@@ -180,6 +224,185 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
+func authCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Auth0 Callback URL hit!")
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Authorization code not found", http.StatusBadRequest)
+		return
+	}
+	log.Println("Authorization code received:", code)
+
+	// Exchange authorization code for ID token
+	var idToken string
+	var err error
+
+	idToken, err = auth0ExchangeCodeForToken(code)
+	if err != nil {
+		http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Println("auth0 id_token received:", idToken)
+	// Set the ID token as a cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:  "id_token",
+		Value: idToken,
+		Path:  "/",
+	})
+
+	log.Println("Redirecting to the success page")
+	// Redirect to success page
+	http.Redirect(w, r, redirectURLAuth0, http.StatusFound)
+}
+
+func auth0ExchangeCodeForToken(code string) (string, error) {
+
+	fmt.Println("Auth0 Flow")
+	data := url.Values{}
+	data.Set("grant_type", "authorization_code")
+	// authClientID
+	data.Set("client_id", "BcnRiVa4hushC3R27fBLJW1Jtit24Khx")
+	// authRedirectUri
+	data.Set("redirect_uri", "http://localhost:8080/auth0callback")
+	data.Set("code", code)
+	data.Set("code_verifier", "SjYw4eLcJZkN2w6L4eHyVNSE3iuLG7rnlkcakh7omPg")
+
+	// authDomain+authTokenURL
+	resp, err := http.PostForm("https://dev-pqfdrdo9.us.auth0.com/oauth/token", data)
+	if err != nil {
+		return "", fmt.Errorf("failed to send token request: %v", err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read token response: %v", err)
+	}
+
+	// Parse JSON response
+	var tokenResponse map[string]interface{}
+	if err := json.Unmarshal(body, &tokenResponse); err != nil {
+		return "", fmt.Errorf("failed to parse token response: %v", err)
+	}
+
+	// Extract ID token
+	idToken, _ := tokenResponse["id_token"].(string)
+	accessToken, exists := tokenResponse["access_token"].(string)
+	log.Println("id_token  received: ", idToken)
+	log.Println("\naccess_token  received: ", accessToken)
+
+	if !exists {
+		return "", fmt.Errorf("ID token not found in response")
+	}
+
+	return idToken, nil
+}
+
+func tenantsHandler(w http.ResponseWriter, r *http.Request) {
+	// Calling validate api
+	url := "https://qa.saasalta.global/session/sso/validate"
+	cookie, _ := r.Cookie("id_token")
+	// Create a new HTTP request
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return
+	}
+
+	// Set headers
+	authorization := "Bearer " + cookie.Value
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", authorization)
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println("Error sending request:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := ioutil.ReadAll(resp.Body)
+	fmt.Println("Validate Response:\n", string(body))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
+}
+
+type RequestPayload struct {
+	Authorization string `json:"Authorization"`
+}
+
+func entitlementHandler(w http.ResponseWriter, r *http.Request) {
+
+	baseURL := "https://qa.saasalta.global/session/sso/login"
+	cookie, _ := r.Cookie("id_token")
+
+	orgId := r.URL.Query().Get("orgId")
+	tenantId := r.URL.Query().Get("tenantId")
+
+	// Setting params
+	params := url.Values{}
+	params.Set("orgName", orgId)
+	params.Set("tenantId", tenantId)
+
+	fullURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
+	//fmt.Println(cookie.Value)
+	payload := RequestPayload{
+		Authorization: cookie.Value,
+	}
+
+	// creating Payload
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Println("Error marshalling JSON:", err)
+		return
+	}
+	//fmt.Println(string(jsonData))
+
+	// Setting API Request
+	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return
+	}
+
+	// Setting headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Making API request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Error sending request:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	//Getting bady from response
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return
+	}
+
+	// Logging response
+	//fmt.Println("Login Response Body:", string(body))
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Write JSON response
+	w.Write(body)
+}
+
 // Okta : Function to exchange authorization code for an ID token
 func exchangeCodeForToken(code string) (string, error) {
 	// Prepare form data
@@ -258,35 +481,32 @@ func exchangeCodeForTokenSFDC(code string) (string, error) {
 	return idToken, nil
 }
 
+// Success page
 func successHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Login Successful!")
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow requests from Angular frontend
 		origin := r.Header.Get("Origin")
-
-		allowedOrigins := map[string]bool{
-			"http://localhost:4200":               true,
-			"https://authone-cohesity.vercel.app": true,
+		if origin == "" {
+			origin = "http://localhost:4200" // Default to Angular dev server
 		}
 
-		if _, exists := allowedOrigins[origin]; exists {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-		} else {
-			w.Header().Set("Access-Control-Allow-Origin", "https://authone-cohesity.vercel.app")
-		}
-
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "3600")
-		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Max-Age", "3600") // Cache preflight response for 1 hour
 
-		if r.Method == http.MethodOptions {
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+
+		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
 }
@@ -435,7 +655,10 @@ func main() {
 	// Keep these for backward compatibility or direct browser testing
 	mux.HandleFunc("/login", loginHandler)
 	mux.HandleFunc("/callback", callbackHandler)
+	mux.HandleFunc("/auth0callback", authCallbackHandler)
 	mux.HandleFunc("/success", successHandler)
+	mux.HandleFunc("/tenants", tenantsHandler)
+	mux.HandleFunc("/entitlements", entitlementHandler)
 
 	// Wrap the router with improved CORS middleware
 	corsHandler := corsMiddleware(mux)
